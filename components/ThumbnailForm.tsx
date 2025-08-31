@@ -3,9 +3,15 @@
 import { useState } from 'react'
 
 interface ThumbnailFormProps {
-  onSubmit: (data: any) => void
-  onBack: () => void
-  uploadedImage: string | null
+  onSubmit: (data: {
+    videoType: string
+    thumbnailStyle: string
+    mood: string
+    placement: string
+    videoTitle?: string
+  }) => void
+    onBack: () => void
+      uploadedImage: string | null
 }
 
 const videoTypes = [
