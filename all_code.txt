@@ -1,3 +1,1586 @@
+
+
+# FILE: ./app/api/generate-thumbnails/route.ts
+
+import { NextRequest, NextResponse } from 'next/server'
+import { fal } from '@fal-ai/client'
+import OpenAI from 'openai'
+
+// Configure APIs
+fal.config({
+  credentials: process.env.FAL_KEY
+})
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+})
+
+interface ThumbnailRequest {
+  imageUrl: string
+  videoType: string
+  thumbnailStyle: string
+  mood: string
+  placement: string
+  videoTitle?: string
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const body: ThumbnailRequest = await request.json()
+
+    if (!body.imageUrl || !body.videoType || !body.thumbnailStyle || !body.mood || !body.placement) {
+      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
+    }
+
+    // Generate enhanced prompts using OpenAI
+    const prompts = await generateEnhancedPrompts(body)
+
+    // Generate thumbnails using Fal.ai
+    const thumbnails = await generateThumbnails(body.imageUrl, prompts)
+
+    return NextResponse.json({ 
+      success: true, 
+      thumbnails,
+      prompts 
+    })
+
+  } catch (error) {
+    console.error('Generation error:', error)
+    return NextResponse.json(
+      { error: 'Thumbnail generation failed' }, 
+      { status: 500 }
+    )
+  }
+}
+
+async function generateEnhancedPrompts(data: ThumbnailRequest) {
+  const baseContext = `
+    Video Type: ${data.videoType}
+    Style: ${data.thumbnailStyle}
+    Mood: ${data.mood}
+    Photo Placement: ${data.placement}
+    ${data.videoTitle ? `Video Title: ${data.videoTitle}` : ''}
+  `
+
+  const promptTemplates = {
+    horizontal: [
+      `Create a professional YouTube thumbnail in ${data.thumbnailStyle} style with ${data.mood} mood. The user's photo should be positioned on the ${data.placement} side. Include bold, eye-catching text elements, vibrant colors, and YouTube-optimized design. Style: ${data.videoType} content. Dimensions: 1280x720.`,
+
+      `Design an engaging YouTube thumbnail for ${data.videoType} content. Use ${data.thumbnailStyle} aesthetic with ${data.mood} energy. Place the person's photo ${data.placement}. Add dynamic backgrounds, compelling visual elements, and ensure mobile readability. Format: 16:9 landscape.`,
+
+      `Generate a click-worthy YouTube thumbnail with ${data.thumbnailStyle} design language. Mood should be ${data.mood}. Position the user's image ${data.placement}. Include relevant icons, bold typography, and high-contrast elements perfect for ${data.videoType} videos. Size: 1280x720px.`
+    ],
+    vertical: [
+      `Create a vertical YouTube Shorts thumbnail in ${data.thumbnailStyle} style. Mood: ${data.mood}. Place the person's photo ${data.placement}. Optimize for mobile viewing with large text, bold visuals, and ${data.videoType} content themes. Dimensions: 720x1280 (9:16 aspect ratio).`,
+
+      `Design a mobile-first Shorts thumbnail for ${data.videoType} content. Use ${data.thumbnailStyle} approach with ${data.mood} feeling. User photo positioned ${data.placement}. Include vertical-optimized text layout and eye-catching visual elements. Format: 9:16 portrait.`,
+
+      `Generate an engaging vertical thumbnail for YouTube Shorts. Style: ${data.thumbnailStyle}, Mood: ${data.mood}. Place person ${data.placement}. Add mobile-friendly text, vibrant colors, and elements that work well for ${data.videoType} vertical content. Size: 720x1280px.`
+    ]
+  }
+
+  try {
+    // Use OpenAI to enhance and refine the prompts
+    const horizontalPrompts = []
+    const verticalPrompts = []
+
+    for (const template of promptTemplates.horizontal) {
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an expert at creating detailed, professional prompts for AI image generation specifically for YouTube thumbnails. Enhance the given prompt to be more specific and effective for generating engaging thumbnails.'
+          },
+          {
+            role: 'user', 
+            content: `Enhance this thumbnail generation prompt: ${template}`
+          }
+        ],
+        max_tokens: 200,
+        temperature: 0.7
+      })
+
+      horizontalPrompts.push(response.choices[0].message.content || template)
+    }
+
+    for (const template of promptTemplates.vertical) {
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an expert at creating detailed, professional prompts for AI image generation specifically for YouTube Shorts thumbnails. Enhance the given prompt to be more specific and effective for generating engaging vertical thumbnails.'
+          },
+          {
+            role: 'user',
+            content: `Enhance this thumbnail generation prompt: ${template}`
+          }
+        ],
+        max_tokens: 200,
+        temperature: 0.7
+      })
+
+      verticalPrompts.push(response.choices[0].message.content || template)
+    }
+
+    return { horizontal: horizontalPrompts, vertical: verticalPrompts }
+
+  } catch (error) {
+    console.error('OpenAI prompt enhancement failed:', error)
+    // Fall back to template prompts if OpenAI fails
+    return { 
+      horizontal: promptTemplates.horizontal, 
+      vertical: promptTemplates.vertical 
+    }
+  }
+}
+
+async function generateThumbnails(imageUrl: string, prompts: any) {
+  const thumbnails = []
+
+  try {
+    // Generate horizontal thumbnails (YouTube)
+    for (let i = 0; i < prompts.horizontal.length; i++) {
+      const result = await fal.subscribe('fal-ai/nano-banana/edit', {
+        input: {
+          prompt: prompts.horizontal[i],
+          image_urls: [imageUrl],
+          num_images: 1,
+          output_format: 'jpeg'
+        },
+        logs: true,
+        onQueueUpdate: (update) => {
+          if (update.status === 'IN_PROGRESS') {
+            console.log(`Horizontal thumbnail ${i + 1}:`, update.logs?.map(log => log.message))
+          }
+        }
+      })
+
+      if (result.data && result.data.images && result.data.images.length > 0) {
+        thumbnails.push({
+          id: `horizontal-${i + 1}`,
+          url: result.data.images[0].url,
+          type: 'horizontal',
+          style: prompts.horizontal[i],
+          dimensions: '1280x720 (16:9)'
+        })
+      }
+    }
+
+    // Generate vertical thumbnails (Shorts)
+    for (let i = 0; i < prompts.vertical.length; i++) {
+      const result = await fal.subscribe('fal-ai/nano-banana/edit', {
+        input: {
+          prompt: prompts.vertical[i],
+          image_urls: [imageUrl],
+          num_images: 1,
+          output_format: 'jpeg'
+        },
+        logs: true,
+        onQueueUpdate: (update) => {
+          if (update.status === 'IN_PROGRESS') {
+            console.log(`Vertical thumbnail ${i + 1}:`, update.logs?.map(log => log.message))
+          }
+        }
+      })
+
+      if (result.data && result.data.images && result.data.images.length > 0) {
+        thumbnails.push({
+          id: `vertical-${i + 1}`,
+          url: result.data.images[0].url,
+          type: 'vertical',
+          style: prompts.vertical[i],
+          dimensions: '720x1280 (9:16)'
+        })
+      }
+    }
+
+    return thumbnails
+
+  } catch (error) {
+    console.error('Fal.ai generation error:', error)
+    throw new Error('Failed to generate thumbnails')
+  }
+}
+
+
+# FILE: ./app/api/health/route.ts
+
+import { NextResponse } from 'next/server'
+
+export async function GET() {
+  return NextResponse.json({ 
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    apis: {
+      fal: !!process.env.FAL_KEY,
+      openai: !!process.env.OPENAI_API_KEY
+    }
+  })
+}
+
+
+# FILE: ./app/api/upload-image/route.ts
+
+import { NextRequest, NextResponse } from 'next/server'
+import { fal } from '@fal-ai/client'
+
+// Configure fal client
+fal.config({
+  credentials: process.env.FAL_KEY
+})
+
+export async function POST(request: NextRequest) {
+  try {
+    const formData = await request.formData()
+    const file = formData.get('image') as File
+
+    if (!file) {
+      return NextResponse.json({ success: false, error: 'No image provided' }, { status: 400 })
+    }
+
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      return NextResponse.json({ success: false, error: 'Invalid file type' }, { status: 400 })
+    }
+
+    // Validate file size (10MB limit)
+    if (file.size > 10 * 1024 * 1024) {
+      return NextResponse.json({ success: false, error: 'File too large (max 10MB)' }, { status: 400 })
+    }
+
+    // Upload file to Fal.ai storage
+    const imageUrl = await fal.storage.upload(file)
+
+    return NextResponse.json({ 
+      success: true, 
+      imageUrl: imageUrl,
+      message: 'Image uploaded successfully' 
+    })
+
+  } catch (error) {
+    console.error('Upload error:', error)
+    return NextResponse.json(
+      { success: false, error: 'Upload failed' }, 
+      { status: 500 }
+    )
+  }
+}
+
+
+# FILE: ./app/globals.css
+
+@import "tailwindcss";
+
+:root {
+  --background: #000000; /* Black background */
+  --foreground: #ffffff; /* White/light foreground */
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #000000; /* Ensure black background in dark mode */
+    --foreground: #ffffff; /* White/light text in dark mode */
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+
+# FILE: ./app/layout.tsx
+
+import type { Metadata } from "next";
+import { Geist, Geist_Mono } from "next/font/google";
+import "./globals.css";
+
+const geistSans = Geist({
+  variable: "--font-geist-sans",
+  subsets: ["latin"],
+});
+
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
+
+export const metadata: Metadata = {
+  title: "Create Next App",
+  description: "Generated by create next app",
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="en">
+      <body
+        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+      >
+        {children}
+      </body>
+    </html>
+  );
+}
+
+
+# FILE: ./app/page.tsx
+
+'use client'
+import { useState } from "react"
+import { Box } from "@/components/ui/box"
+import { Button } from "@/components/ui/button"
+import ImageUpload from "@/components/ImageUpload"
+import ThumbnailForm from "@/components/ThumbnailForm"
+import GenerationStep from "@/components/GenerationStep"
+import ResultsDisplay from "@/components/ResultsDisplay"
+import ProgressBar from "@/components/ProgressBar"
+
+
+export default function Home() {
+  const [currentStep, setCurrentStep] = useState(1)
+  const [uploadedImage, setUploadedImage] = useState<string | null>(null)
+  const [formData, setFormData] = useState({})
+  const [generatedThumbnails, setGeneratedThumbnails] = useState([])
+  const [isGenerating, setIsGenerating] = useState(false)
+
+  const handleImageUpload = (imageUrl: string) => {
+    setUploadedImage(imageUrl)
+    setCurrentStep(3)
+  }
+
+  const handleFormSubmit = async (data: any) => {
+    setFormData(data)
+    setCurrentStep(4)
+    setIsGenerating(true)
+
+    try {
+      const response = await fetch('/api/generate-thumbnails', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          imageUrl: uploadedImage,
+          ...data
+        }),
+      })
+
+      const result = await response.json()
+      setGeneratedThumbnails(result.thumbnails)
+      setCurrentStep(5)
+    } catch (error) {
+      console.error('Generation failed:', error)
+    } finally {
+      setIsGenerating(false)
+    }
+  }
+
+  const restartProcess = () => {
+    setCurrentStep(1)
+    setUploadedImage(null)
+    setFormData({})
+    setGeneratedThumbnails([])
+    setIsGenerating(false)
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <header className="bg-white shadow-sm border-b">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center py-6">
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900">
+                🎬 AI Thumbnail Generator
+              </h1>
+              <p className="text-gray-600 mt-1">
+                Create professional YouTube thumbnails in seconds
+              </p>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <ProgressBar currentStep={currentStep} />
+
+        {currentStep === 1 && (
+          <div className="text-center py-12">
+            <h2 className="text-4xl font-bold text-gray-900 mb-4">
+              Welcome to AI Thumbnail Generator
+            </h2>
+            <p className="text-xl text-gray-600 mb-8 max-w-2xl mx-auto">
+              Upload your photo, answer a few quick questions, and get professional
+              thumbnails for both YouTube videos and Shorts - powered by AI.
+            </p>
+            <button
+              onClick={() => setCurrentStep(2)}
+              className="btn-dark"
+            >
+              🚀 Get Started
+            </button>
+          </div>
+        )}
+
+        {currentStep === 2 && (
+          <ImageUpload onImageUpload={handleImageUpload} onBack={() => setCurrentStep(1)} />
+        )}
+
+        {currentStep === 3 && (
+          <ThumbnailForm
+            onSubmit={handleFormSubmit}
+            onBack={() => setCurrentStep(2)}
+            uploadedImage={uploadedImage}
+          />
+        )}
+
+        {currentStep === 4 && (
+          <GenerationStep isGenerating={isGenerating} />
+        )}
+
+        {currentStep === 5 && (
+          <ResultsDisplay
+            thumbnails={generatedThumbnails}
+            onStartOver={restartProcess}
+            onGenerateNew={() => setCurrentStep(3)}
+          />
+        )}
+      </main>
+    </div>
+  )
+}
+
+
+# FILE: ./components/ErrorBoundary.tsx
+
+'use client'
+
+import { Component, ReactNode } from 'react'
+
+interface Props {
+  children: ReactNode
+  fallback?: ReactNode
+}
+
+interface State {
+  hasError: boolean
+  error?: Error
+}
+
+export default class ErrorBoundary extends Component<Props, State> {
+  constructor(props: Props) {
+    super(props)
+    this.state = { hasError: false }
+  }
+
+  static getDerivedStateFromError(error: Error): State {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, errorInfo: any) {
+    console.error('ErrorBoundary caught an error:', error, errorInfo)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return this.props.fallback || (
+        <div className="text-center py-12">
+          <h2 className="text-xl font-semibold text-red-600 mb-4">
+            Something went wrong
+          </h2>
+          <p className="text-gray-600 mb-4">
+            We encountered an error while processing your request.
+          </p>
+          <button
+            onClick={() => this.setState({ hasError: false, error: undefined })}
+            className="btn-primary"
+          >
+            Try Again
+          </button>
+        </div>
+      )
+    }
+
+    return this.props.children
+  }
+}
+
+
+# FILE: ./components/GenerationStep.tsx
+
+'use client'
+
+import { useEffect, useState } from 'react'
+
+interface GenerationStepProps {
+  isGenerating: boolean
+}
+
+const loadingSteps = [
+  'Analyzing your photo...',
+  'Creating AI prompts...',
+  'Generating horizontal thumbnails...',
+  'Generating vertical thumbnails...',
+  'Finalizing results...'
+]
+
+export default function GenerationStep({ isGenerating }: GenerationStepProps) {
+  const [currentLoadingStep, setCurrentLoadingStep] = useState(0)
+
+  useEffect(() => {
+    if (!isGenerating) return
+
+    const interval = setInterval(() => {
+      setCurrentLoadingStep(prev => {
+        if (prev < loadingSteps.length - 1) {
+          return prev + 1
+        }
+        return prev
+      })
+    }, 1000)
+
+    return () => clearInterval(interval)
+  }, [isGenerating])
+
+  return (
+    <div className="step-card max-w-2xl mx-auto text-center">
+      <h2 className="text-2xl font-bold text-gray-900 mb-4">
+        Generating Your Thumbnails
+      </h2>
+      <p className="text-gray-600 mb-8">
+        Our AI is creating professional thumbnails for you. This usually takes 10-15 seconds.
+      </p>
+
+      <div className="space-y-4">
+        {loadingSteps.map((step, index) => (
+          <div
+            key={index}
+            className={`flex items-center justify-center p-4 rounded-lg transition-all ${
+              index <= currentLoadingStep
+                ? 'bg-blue-100 text-blue-800'
+                : 'bg-gray-100 text-gray-500'
+            }`}
+          >
+            {index < currentLoadingStep ? (
+              <span className="mr-3 text-green-600">✓</span>
+            ) : index === currentLoadingStep ? (
+              <div className="loading-spinner mr-3"></div>
+            ) : (
+              <span className="mr-3 text-gray-400">○</span>
+            )}
+            {step}
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-8">
+        <div className="w-full bg-gray-200 rounded-full h-2">
+          <div
+            className="bg-blue-600 h-2 rounded-full transition-all duration-1000"
+            style={{ width: `${((currentLoadingStep + 1) / loadingSteps.length) * 100}%` }}
+          ></div>
+        </div>
+        <p className="text-sm text-gray-500 mt-2">
+          {Math.round(((currentLoadingStep + 1) / loadingSteps.length) * 100)}% Complete
+        </p>
+      </div>
+    </div>
+  )
+}
+
+
+# FILE: ./components/ImageUpload.tsx
+
+'use client'
+
+import { useState, useRef } from 'react'
+
+interface ImageUploadProps {
+  onImageUpload: (imageUrl: string) => void
+  onBack: () => void
+}
+
+export default function ImageUpload({ onImageUpload, onBack }: ImageUploadProps) {
+  const [dragOver, setDragOver] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+
+    const files = e.dataTransfer.files
+    if (files.length > 0) {
+      handleFileUpload(files[0])
+    }
+  }
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (files && files.length > 0) {
+      handleFileUpload(files[0])
+    }
+  }
+
+  const handleFileUpload = async (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      alert('Please upload an image file')
+      return
+    }
+
+    setUploading(true)
+
+    try {
+      // Create preview
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        setPreviewUrl(e.target?.result as string)
+      }
+      reader.readAsDataURL(file)
+
+      // Upload to server
+      const formData = new FormData()
+      formData.append('image', file)
+
+      const response = await fetch('/api/upload-image', {
+        method: 'POST',
+        body: formData,
+      })
+
+      const result = await response.json()
+
+      if (result.success) {
+        // Pass the uploaded image URL to parent
+        onImageUpload(result.imageUrl)
+      } else {
+        throw new Error(result.error)
+      }
+    } catch (error) {
+      console.error('Upload failed:', error)
+      alert('Upload failed. Please try again.')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  return (
+    <div className="step-card max-w-2xl mx-auto">
+      <h2 className="text-2xl font-bold text-gray-900 mb-4">Upload Your Photo</h2>
+      <p className="text-gray-600 mb-6">
+        Upload a photo of yourself that will be included in your thumbnail. 
+        This will be your creator photo that appears on the thumbnail.
+      </p>
+
+      {!previewUrl ? (
+        <>
+          <div
+            className={`upload-area ${dragOver ? 'dragover' : ''}`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <div className="text-6xl mb-4">📸</div>
+            <h3 className="text-xl font-semibold text-gray-700 mb-2">
+              {dragOver ? 'Drop your image here' : 'Click or drag to upload'}
+            </h3>
+            <p className="text-gray-500 mb-4">
+              Supports JPG, PNG, GIF up to 10MB
+            </p>
+            {uploading && (
+              <div className="flex items-center justify-center">
+                <div className="loading-spinner mr-2"></div>
+                <span>Uploading...</span>
+              </div>
+            )}
+          </div>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleFileSelect}
+            className="hidden"
+          />
+        </>
+      ) : (
+        <div className="text-center">
+          <div className="mb-4">
+            <img
+              src={previewUrl}
+              alt="Uploaded preview"
+              className="max-w-full max-h-64 mx-auto rounded-lg shadow-md"
+            />
+          </div>
+          <div className="flex justify-center space-x-4">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="btn-secondary"
+            >
+              Change Photo
+            </button>
+            <button
+              onClick={() => onImageUpload(previewUrl)}
+              className="btn-primary"
+            >
+              Continue
+            </button>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleFileSelect}
+            className="hidden"
+          />
+        </div>
+      )}
+
+      <div className="flex justify-between mt-8">
+        <button onClick={onBack} className="btn-secondary">
+          Back
+        </button>
+      </div>
+    </div>
+  )
+}
+
+
+# FILE: ./components/Loading.tsx
+
+interface LoadingProps {
+  message?: string
+}
+
+export default function Loading({ message = 'Loading...' }: LoadingProps) {
+  return (
+    <div className="flex flex-col items-center justify-center py-12">
+      <div className="loading-spinner mb-4"></div>
+      <p className="text-gray-600">{message}</p>
+    </div>
+  )
+}
+
+
+# FILE: ./components/ProgressBar.tsx
+
+interface ProgressBarProps {
+  currentStep: number
+}
+
+const steps = [
+  { number: 1, label: 'Welcome' },
+  { number: 2, label: 'Upload' },
+  { number: 3, label: 'Customize' },
+  { number: 4, label: 'Generate' },
+  { number: 5, label: 'Download' }
+]
+
+export default function ProgressBar({ currentStep }: ProgressBarProps) {
+  return (
+    <div className="mb-8">
+      <div className="flex items-center justify-center space-x-4">
+        {steps.map((step, index) => (
+          <div key={step.number} className="flex items-center">
+            <div className={`
+              flex items-center justify-center w-10 h-10 rounded-full text-sm font-semibold
+              ${currentStep >= step.number 
+                ? 'bg-blue-600 text-white' 
+                : 'bg-gray-200 text-gray-500'
+              }
+            `}>
+              {step.number}
+            </div>
+            <span className={`
+              ml-2 text-sm font-medium
+              ${currentStep >= step.number ? 'text-blue-600' : 'text-gray-500'}
+            `}>
+              {step.label}
+            </span>
+            {index < steps.length - 1 && (
+              <div className={`
+                w-12 h-0.5 mx-4
+                ${currentStep > step.number ? 'bg-blue-600' : 'bg-gray-200'}
+              `} />
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+
+# FILE: ./components/ResultsDisplay.tsx
+
+'use client'
+
+import { useState } from 'react'
+
+interface Thumbnail {
+  id: string
+  url: string
+  type: 'horizontal' | 'vertical'
+  style: string
+  dimensions: string
+}
+
+interface ResultsDisplayProps {
+  thumbnails: Thumbnail[]
+  onStartOver: () => void
+  onGenerateNew: () => void
+}
+
+export default function ResultsDisplay({ thumbnails, onStartOver, onGenerateNew }: ResultsDisplayProps) {
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  const horizontalThumbnails = thumbnails.filter(t => t.type === 'horizontal')
+  const verticalThumbnails = thumbnails.filter(t => t.type === 'vertical')
+
+  const downloadThumbnail = async (url: string, filename: string) => {
+    try {
+      const response = await fetch(url)
+      const blob = await response.blob()
+      const downloadUrl = window.URL.createObjectURL(blob)
+
+      const link = document.createElement('a')
+      link.href = downloadUrl
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+
+      window.URL.revokeObjectURL(downloadUrl)
+    } catch (error) {
+      console.error('Download failed:', error)
+      alert('Download failed. Please try again.')
+    }
+  }
+
+  const copyToClipboard = async (url: string, id: string) => {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopiedId(id)
+      setTimeout(() => setCopiedId(null), 2000)
+    } catch (error) {
+      console.error('Copy failed:', error)
+    }
+  }
+
+  const shareLink = (url: string) => {
+    alert(`Share link: ${url}\n\n(In a real app, this would generate a shareable link)`)
+  }
+
+  const downloadAll = () => {
+    alert('ZIP download would start in a real app with all thumbnails included')
+  }
+
+  return (
+    <div className="space-y-8">
+      <div className="text-center">
+        <h2 className="text-3xl font-bold text-gray-900 mb-4">
+          Your Thumbnails Are Ready! 🎉
+        </h2>
+        <p className="text-gray-600 mb-6">
+          We've generated {thumbnails.length} professional thumbnails for you.
+          Download them individually or get them all in a ZIP file.
+        </p>
+
+        <div className="flex justify-center space-x-4 mb-8">
+          <button onClick={downloadAll} className="btn-primary">
+            📦 Download All as ZIP
+          </button>
+          <button onClick={onGenerateNew} className="btn-secondary">
+            🔄 Generate New Variations
+          </button>
+          <button onClick={onStartOver} className="btn-secondary">
+            🏠 Start Over
+          </button>
+        </div>
+      </div>
+
+      {/* Horizontal Thumbnails */}
+      {horizontalThumbnails.length > 0 && (
+        <div>
+          <h3 className="text-xl font-semibold text-gray-900 mb-4">
+            📺 YouTube Thumbnails (16:9)
+          </h3>
+          <div className="thumbnail-grid">
+            {horizontalThumbnails.map((thumbnail, index) => (
+              <ThumbnailCard
+                key={thumbnail.id}
+                thumbnail={thumbnail}
+                title={`YouTube Thumbnail ${index + 1}`}
+                onDownload={() => downloadThumbnail(thumbnail.url, `youtube-thumbnail-${index + 1}.jpg`)}
+                onCopy={() => copyToClipboard(thumbnail.url, thumbnail.id)}
+                onShare={() => shareLink(thumbnail.url)}
+                copied={copiedId === thumbnail.id}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Vertical Thumbnails */}
+      {verticalThumbnails.length > 0 && (
+        <div>
+          <h3 className="text-xl font-semibold text-gray-900 mb-4">
+            📱 Shorts Thumbnails (9:16)
+          </h3>
+          <div className="thumbnail-grid">
+            {verticalThumbnails.map((thumbnail, index) => (
+              <ThumbnailCard
+                key={thumbnail.id}
+                thumbnail={thumbnail}
+                title={`Shorts Thumbnail ${index + 1}`}
+                onDownload={() => downloadThumbnail(thumbnail.url, `shorts-thumbnail-${index + 1}.jpg`)}
+                onCopy={() => copyToClipboard(thumbnail.url, thumbnail.id)}
+                onShare={() => shareLink(thumbnail.url)}
+                copied={copiedId === thumbnail.id}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+interface ThumbnailCardProps {
+  thumbnail: Thumbnail
+  title: string
+  onDownload: () => void
+  onCopy: () => void
+  onShare: () => void
+  copied: boolean
+}
+
+function ThumbnailCard({ thumbnail, title, onDownload, onCopy, onShare, copied }: ThumbnailCardProps) {
+  return (
+    <div className="card group overflow-hidden">
+      <div className="relative aspect-video bg-gray-900 flex items-center justify-center">
+        <img
+          src={thumbnail.url}
+          alt={title}
+          className="object-contain group-hover:scale-105 transition-transform duration-300"
+        />
+      </div>
+      <div className="p-4 flex justify-between items-center">
+        <span className="text-sm text-cyan-200">{thumbnail.dimensions}</span>
+        <div className="flex space-x-2">
+          <button onClick={onDownload} className="btn-secondary text-sm">💾</button>
+          <button onClick={onCopy} className="btn-secondary text-sm">
+            {copied ? '✓' : '📋'}
+          </button>
+          <button onClick={onShare} className="btn-secondary text-sm">🔗</button>
+        </div>
+      </div>
+    </div>
+
+  )
+}
+
+
+# FILE: ./components/ThumbnailForm.tsx
+
+'use client'
+
+import { useState } from 'react'
+
+interface ThumbnailFormProps {
+  onSubmit: (data: any) => void
+  onBack: () => void
+  uploadedImage: string | null
+}
+
+const videoTypes = [
+  'Gaming', 'Tutorial', 'Vlog', 'Review', 'Music', 'Comedy', 
+  'Education', 'Tech', 'Fitness', 'Cooking', 'Travel', 'DIY'
+]
+
+const thumbnailStyles = [
+  'Bold & Colorful', 'Minimalist', 'Dark & Moody', 'Bright & Fun', 
+  'Professional', 'Gaming Style', 'Tech Style'
+]
+
+const moods = [
+  'Exciting', 'Calm', 'Serious', 'Funny', 'Mysterious', 
+  'Energetic', 'Professional', 'Creative'
+]
+
+const placements = [
+  'Left', 'Right', 'Center', 'Top-left', 'Top-right', 
+  'Bottom-left', 'Bottom-right'
+]
+
+export default function ThumbnailForm({ onSubmit, onBack, uploadedImage }: ThumbnailFormProps) {
+  const [formData, setFormData] = useState({
+    videoType: '',
+    thumbnailStyle: '',
+    mood: '',
+    placement: '',
+    videoTitle: ''
+  })
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+
+    if (!formData.videoType || !formData.thumbnailStyle || !formData.mood || !formData.placement) {
+      alert('Please fill in all required fields')
+      return
+    }
+
+    onSubmit(formData)
+  }
+
+  const handleInputChange = (field: string, value: string) => {
+    setFormData(prev => ({ ...prev, [field]: value }))
+  }
+
+  const isFormValid = formData.videoType && formData.thumbnailStyle && formData.mood && formData.placement
+
+  return (
+    <div className="step-card max-w-4xl mx-auto">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Form Section */}
+        <div className="lg:col-span-2">
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">Customize Your Thumbnail</h2>
+          <p className="text-gray-600 mb-6">
+            Tell us about your video so we can create the perfect thumbnail for you.
+          </p>
+
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Video Type *
+              </label>
+              <select
+                value={formData.videoType}
+                onChange={(e) => handleInputChange('videoType', e.target.value)}
+                className="form-select"
+                required
+              >
+                <option value="">Select video type...</option>
+                {videoTypes.map(type => (
+                  <option key={type} value={type}>{type}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Thumbnail Style *
+              </label>
+              <select
+                value={formData.thumbnailStyle}
+                onChange={(e) => handleInputChange('thumbnailStyle', e.target.value)}
+                className="form-select"
+                required
+              >
+                <option value="">Select style...</option>
+                {thumbnailStyles.map(style => (
+                  <option key={style} value={style}>{style}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Mood/Tone *
+              </label>
+              <select
+                value={formData.mood}
+                onChange={(e) => handleInputChange('mood', e.target.value)}
+                className="form-select"
+                required
+              >
+                <option value="">Select mood...</option>
+                {moods.map(mood => (
+                  <option key={mood} value={mood}>{mood}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Your Photo Placement *
+              </label>
+              <select
+                value={formData.placement}
+                onChange={(e) => handleInputChange('placement', e.target.value)}
+                className="form-select"
+                required
+              >
+                <option value="">Select placement...</option>
+                {placements.map(placement => (
+                  <option key={placement} value={placement}>{placement}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Video Title (Optional)
+              </label>
+              <input
+                type="text"
+                value={formData.videoTitle}
+                onChange={(e) => handleInputChange('videoTitle', e.target.value)}
+                className="form-input"
+                placeholder="Enter your video title for context..."
+              />
+            </div>
+
+            <div className="flex justify-between pt-6">
+              <button type="button" onClick={onBack} className="btn-secondary">
+                Back
+              </button>
+              <button 
+                type="submit" 
+                className={`btn-primary ${!isFormValid ? 'opacity-50 cursor-not-allowed' : ''}`}
+                disabled={!isFormValid}
+              >
+                Generate Thumbnails
+              </button>
+            </div>
+          </form>
+        </div>
+
+        {/* Preview and Tips Section */}
+        <div className="space-y-6">
+          {uploadedImage && (
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900 mb-3">Your Photo</h3>
+              <img
+                src={uploadedImage}
+                alt="Your uploaded photo"
+                className="w-full rounded-lg shadow-md"
+              />
+            </div>
+          )}
+
+          <div className="bg-blue-50 p-4 rounded-lg">
+            <h3 className="text-lg font-semibold text-blue-900 mb-3">💡 Tips</h3>
+            <ul className="text-sm text-blue-800 space-y-2">
+              <li>• High contrast colors perform better</li>
+              <li>• Keep text large and readable</li>
+              <li>• Faces increase engagement</li>
+              <li>• Test thumbnails at small sizes</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
+# FILE: ./components/ui/box.tsx
+
+import * as React from "react"
+import { cva, type VariantProps } from "class-variance-authority"
+import { cn } from "@/lib/utils"
+
+const boxVariants = cva("w-full", {
+    variants: {
+        variant: {
+            default: "bg-background text-foreground",
+            card: "bg-card p-4 rounded-lg shadow-sm",
+            // Add more variants as needed
+        },
+    },
+    defaultVariants: {
+        variant: "default",
+    },
+})
+
+export interface BoxProps extends React.HTMLAttributes<HTMLDivElement>, VariantProps<typeof boxVariants> { }
+
+export const Box = React.forwardRef<HTMLDivElement, BoxProps>(({ className, variant, ...props }, ref) => (
+    <div
+        ref={ref}
+        className={cn(boxVariants({ variant, className }))}
+        {...props}
+    />
+))
+Box.displayName = "Box"
+
+# FILE: ./components/ui/button.tsx
+
+// components/ui/button.tsx
+import { cva, type VariantProps } from "class-variance-authority"
+import { forwardRef } from "react"
+
+export const buttonVariants = cva(
+    "inline-flex items-center justify-center rounded-lg text-sm font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 disabled:pointer-events-none",
+    {
+        variants: {
+            variant: {
+                default: "bg-primary text-primary-foreground hover:bg-primary/90",
+                secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80"
+            }
+        },
+        defaultVariants: { variant: "default" }
+    }
+)
+
+export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement>, VariantProps<typeof buttonVariants> { }
+
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
+    ({ className, variant, ...props }, ref) => (
+        <button ref={ref} className={buttonVariants({ variant, className })} {...props} />
+    )
+)
+Button.displayName = "Button"
+
+
+# FILE: ./components/ui/card.tsx
+
+// components/ui/card.tsx
+import { cn } from "@/lib/utils"
+
+export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+    return <div className={cn("rounded-lg border p-4 shadow-sm bg-card", className)} {...props} />
+}
+
+
+# FILE: ./components/ui/input.tsx
+
+// components/ui/input.tsx
+import { cva, type VariantProps } from "class-variance-authority"
+import { forwardRef } from "react"
+
+export const inputVariants = cva(
+    "w-full rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent",
+    { variants: {}, defaultVariants: {} }
+)
+
+export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement>, VariantProps<typeof inputVariants> { }
+
+export const Input = forwardRef<HTMLInputElement, InputProps>(({ className, ...props }, ref) => (
+    <input ref={ref} className={inputVariants({ className })} {...props} />
+))
+Input.displayName = "Input"
+
+
+# FILE: ./components/ui/theme-provider.tsx
+
+// components/ui/theme-provider.tsx
+"use client"
+
+import { ThemeProvider as NextThemesProvider } from "next-themes"
+import { FC, PropsWithChildren } from "react"
+
+interface ThemeProviderProps {
+    attribute?: "class" | "data-theme"
+    defaultTheme?: string
+    enableSystem?: boolean
+}
+
+export const ThemeProvider: FC<PropsWithChildren<ThemeProviderProps>> = ({
+    children,
+    attribute = "class",
+    defaultTheme = "system",
+    enableSystem = true,
+}) => {
+    return (
+        <NextThemesProvider
+            attribute={attribute}
+            defaultTheme={defaultTheme}
+            enableSystem={enableSystem}
+            storageKey="theme"
+        >
+            {children}
+        </NextThemesProvider>
+    )
+}
+
+
+# FILE: ./lib/api.ts
+
+import { ThumbnailRequest, GenerationResponse, UploadResponse } from './types'
+
+export class ApiClient {
+  private baseUrl: string
+
+  constructor(baseUrl = '') {
+    this.baseUrl = baseUrl
+  }
+
+  async uploadImage(file: File): Promise<UploadResponse> {
+    const formData = new FormData()
+    formData.append('image', file)
+
+    const response = await fetch(`${this.baseUrl}/api/upload-image`, {
+      method: 'POST',
+      body: formData,
+    })
+
+    return response.json()
+  }
+
+  async generateThumbnails(data: ThumbnailRequest): Promise<GenerationResponse> {
+    const response = await fetch(`${this.baseUrl}/api/generate-thumbnails`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(data),
+    })
+
+    return response.json()
+  }
+
+  async checkHealth() {
+    const response = await fetch(`${this.baseUrl}/api/health`)
+    return response.json()
+  }
+}
+
+export const api = new ApiClient()
+
+
+# FILE: ./lib/env.ts
+
+export function validateEnvironment() {
+  const requiredEnvVars = [
+    'FAL_KEY',
+    'OPENAI_API_KEY'
+  ]
+
+  const missingVars = requiredEnvVars.filter(varName => !process.env[varName])
+
+  if (missingVars.length > 0) {
+    throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`)
+  }
+
+  return true
+}
+
+export function getEnvVar(name: string, defaultValue?: string): string {
+  const value = process.env[name]
+  if (!value && !defaultValue) {
+    throw new Error(`Environment variable ${name} is required`)
+  }
+  return value || defaultValue || ''
+}
+
+
+# FILE: ./lib/errors.ts
+
+export class ApiError extends Error {
+  public statusCode: number
+
+  constructor(message: string, statusCode: number = 500) {
+    super(message)
+    this.statusCode = statusCode
+    this.name = 'ApiError'
+  }
+}
+
+export function handleApiError(error: unknown): { message: string; statusCode: number } {
+  if (error instanceof ApiError) {
+    return { message: error.message, statusCode: error.statusCode }
+  }
+
+  if (error instanceof Error) {
+    return { message: error.message, statusCode: 500 }
+  }
+
+  return { message: 'An unexpected error occurred', statusCode: 500 }
+}
+
+
+# FILE: ./lib/types.ts
+
+export interface ThumbnailRequest {
+  imageUrl: string
+  videoType: string
+  thumbnailStyle: string
+  mood: string
+  placement: string
+  videoTitle?: string
+}
+
+export interface Thumbnail {
+  id: string
+  url: string
+  type: 'horizontal' | 'vertical'
+  style: string
+  dimensions: string
+}
+
+export interface GenerationResponse {
+  success: boolean
+  thumbnails: Thumbnail[]
+  prompts?: {
+    horizontal: string[]
+    vertical: string[]
+  }
+  error?: string
+}
+
+export interface UploadResponse {
+  success: boolean
+  imageUrl?: string
+  error?: string
+  message?: string
+}
+
+// Form data interface
+export interface FormData {
+  videoType: string
+  thumbnailStyle: string
+  mood: string
+  placement: string
+  videoTitle: string
+}
+
+// Constants
+export const VIDEO_TYPES = [
+  'Gaming', 'Tutorial', 'Vlog', 'Review', 'Music', 'Comedy', 
+  'Education', 'Tech', 'Fitness', 'Cooking', 'Travel', 'DIY'
+] as const
+
+export const THUMBNAIL_STYLES = [
+  'Bold & Colorful', 'Minimalist', 'Dark & Moody', 'Bright & Fun', 
+  'Professional', 'Gaming Style', 'Tech Style'
+] as const
+
+export const MOODS = [
+  'Exciting', 'Calm', 'Serious', 'Funny', 'Mysterious', 
+  'Energetic', 'Professional', 'Creative'
+] as const
+
+export const PLACEMENTS = [
+  'Left', 'Right', 'Center', 'Top-left', 'Top-right', 
+  'Bottom-left', 'Bottom-right'
+] as const
+
+
+# FILE: ./lib/utils.ts
+
+export function cn(...classes: (string | undefined | null | false)[]): string {
+  return classes.filter(Boolean).join(' ')
+}
+
+export function generateFileName(type: 'horizontal' | 'vertical', index: number): string {
+  const prefix = type === 'horizontal' ? 'youtube-thumbnail' : 'shorts-thumbnail'
+  return `${prefix}-${index + 1}.jpg`
+}
+
+export function validateImageFile(file: File): { valid: boolean; error?: string } {
+  if (!file.type.startsWith('image/')) {
+    return { valid: false, error: 'Please upload an image file' }
+  }
+
+  if (file.size > 10 * 1024 * 1024) { // 10MB
+    return { valid: false, error: 'File size must be less than 10MB' }
+  }
+
+  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif']
+  if (!allowedTypes.includes(file.type)) {
+    return { valid: false, error: 'Supported formats: JPG, PNG, GIF' }
+  }
+
+  return { valid: true }
+}
+
+export function downloadFile(url: string, filename: string): void {
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.target = '_blank'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+}
+
+export async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch (error) {
+    console.error('Failed to copy to clipboard:', error)
+    return false
+  }
+}
+
+
+# FILE: ./middleware.ts
+
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
+
+export function middleware(request: NextRequest) {
+  // Add CORS headers for API routes
+  if (request.nextUrl.pathname.startsWith('/api/')) {
+    const response = NextResponse.next()
+
+    response.headers.set('Access-Control-Allow-Origin', '*')
+    response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+    response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+
+    return response
+  }
+
+  return NextResponse.next()
+}
+
+export const config = {
+  matcher: '/api/:path*',
+}
+
+
+# FILE: ./next-env.d.ts
+
+/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+/// <reference path="./.next/types/routes.d.ts" />
+
+// NOTE: This file should not be edited
+// see https://nextjs.org/docs/app/api-reference/config/typescript for more information.
+
+
+# FILE: ./next.config.ts
+
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
+  experimental: {
+    appDir: true
+  }
+};
+
+module.exports = nextConfig;
+
+
+# FILE: ./package-lock.json
+
 {
   "name": "my-app",
   "version": "0.1.0",
@@ -6242,6 +7825,138 @@
       "funding": {
         "url": "https://github.com/sponsors/sindresorhus"
       }
+    }
+  }
+}
+
+
+# FILE: ./package.json
+
+{
+  "name": "my-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build --turbopack",
+    "start": "next start",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "@fal-ai/client": "^1.6.2",
+    "class-variance-authority": "^0.7.1",
+    "next": "15.5.2",
+    "next-themes": "^0.4.6",
+    "openai": "^5.16.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "15.5.2",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
+
+
+# FILE: ./scripts/setup.js
+
+#!/usr/bin/env node
+
+const fs = require('fs')
+const path = require('path')
+
+console.log('🚀 Setting up AI Thumbnail Generator...')
+
+// Check if .env.local exists
+const envLocalPath = path.join(process.cwd(), '.env.local')
+const envExamplePath = path.join(process.cwd(), '.env.example')
+
+if (!fs.existsSync(envLocalPath)) {
+  if (fs.existsSync(envExamplePath)) {
+    fs.copyFileSync(envExamplePath, envLocalPath)
+    console.log('✅ Created .env.local from .env.example')
+    console.log('⚠️  Please add your API keys to .env.local')
+  } else {
+    console.log('❌ .env.example not found')
+  }
+} else {
+  console.log('✅ .env.local already exists')
+}
+
+// Check if node_modules exists
+const nodeModulesPath = path.join(process.cwd(), 'node_modules')
+if (!fs.existsSync(nodeModulesPath)) {
+  console.log('📦 Installing dependencies...')
+  const { execSync } = require('child_process')
+  execSync('npm install', { stdio: 'inherit' })
+}
+
+console.log(`
+🎉 Setup complete! 
+
+Next steps:
+1. Add your API keys to .env.local:
+   - FAL_KEY=your_fal_ai_api_key
+   - OPENAI_API_KEY=your_openai_api_key
+
+2. Start the development server:
+   npm run dev
+
+3. Open http://localhost:3000
+
+Need help? Check the README.md file.
+`)
+
+
+# FILE: ./tsconfig.json
+
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": ["./*"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
+
+
+# FILE: ./vercel.json
+
+{
+  "env": {
+    "FAL_KEY": "@fal-key",
+    "OPENAI_API_KEY": "@openai-key"
+  },
+  "build": {
+    "env": {
+      "FAL_KEY": "@fal-key",
+      "OPENAI_API_KEY": "@openai-key"
     }
   }
 }

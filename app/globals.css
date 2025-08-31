@@ -1,26 +1,56 @@
 @import "tailwindcss";
 
+/* Theme colors */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0f172a; /* slate-900 */
+  --foreground: #f8fafc; /* slate-50 */
+  --primary: #2563eb;   /* blue-600 */
+  --secondary: #64748b; /* slate-500 */
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-secondary: var(--secondary);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+body {
+  @apply bg-background text-foreground font-sans antialiased;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Step cards */
+.step-card {
+  @apply bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700 transition hover:shadow-xl;
+}
+
+/* Upload area */
+.upload-area {
+  @apply flex flex-col items-center justify-center border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-2xl p-12 text-center cursor-pointer transition bg-slate-50 dark:bg-slate-900 hover:border-primary hover:bg-blue-50/50;
+}
+.upload-area.dragover {
+  @apply border-primary bg-blue-100/40;
+}
+
+/* Thumbnail grid */
+.thumbnail-grid {
+  @apply grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6;
+}
+
+/* Buttons */
+.btn-primary {
+  @apply px-6 py-3 rounded-xl bg-primary text-white font-semibold shadow-md hover:bg-blue-700 focus:ring-2 focus:ring-blue-400 transition disabled:opacity-50 disabled:cursor-not-allowed;
+}
+.btn-secondary {
+  @apply px-6 py-3 rounded-xl bg-slate-200 text-slate-800 font-medium shadow hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600;
+}
+.btn-dark {
+  @apply px-6 py-3 rounded-xl bg-gray-900 text-white font-semibold shadow hover:bg-gray-800;
+}
+
+/* Spinner */
+.loading-spinner {
+  @apply w-5 h-5 border-2 border-current border-t-transparent rounded-full animate-spin;
 }
